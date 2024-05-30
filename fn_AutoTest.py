@@ -104,6 +104,10 @@ class Driver():
         self.a.click(ele).perform()
         time.sleep(5)
 
+    def homePage(self):
+        ele = self.d.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[1]/a")
+        self.a.click(ele).perform()
+        time.sleep(2)    
 
     # 登出畫面
     def LogOut_Page(self):
@@ -112,5 +116,14 @@ class Driver():
         time.sleep(2)
 
         ele = self.d.find_element(By.XPATH, "/html/body/div[1]/header/nav/div/ul/li[2]/ul/li/div/ul/li[4]/a")
+        self.a.click(ele).perform()
+        time.sleep(2)
+
+class Drive2(Driver):
+    def __init__(self, driver, action):
+        super().__init__(driver, action)
+
+    def homePage2(self):
+        ele = self.d.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[1]/a")
         self.a.click(ele).perform()
         time.sleep(2)

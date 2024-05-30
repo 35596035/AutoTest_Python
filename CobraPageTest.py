@@ -1,5 +1,4 @@
 import fn_AutoTest
-
 # selenium 相關套件
 from selenium import webdriver
 import selenium.webdriver.support.ui as ui
@@ -27,6 +26,7 @@ driver.maximize_window()
 action = ActionChains(driver)
 
 fn_AutoTest = fn_AutoTest.Driver(driver,action)
+
 fn_AutoTest.Show()
 # ---------------
 # 連線不安全認證
@@ -75,6 +75,9 @@ fn_AutoTest.Systen_Resorce_Page()
 # 系統管理 -> 使用者帳戶管理
 fn_AutoTest.Setting_Click()
 fn_AutoTest.Setting_Menu_User()
+
+# 儀錶板
+fn_AutoTest.homePage()
 
 # 登出畫面
 fn_AutoTest.LogOut_Page()
