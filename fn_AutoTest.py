@@ -60,12 +60,13 @@ class Driver():
         image = Image.open(path)              # 將 screen load 至 memory
         image = image.crop((left, top, right, bottom)) # 根據位置剪裁圖片
         image.save(path, 'png')               # 重新儲存圖片為 png 格式
+        time.sleep(3)
 
     #圖片辨識
     def ImgNum(self, path):
         img = Image.open(path)
         result = pytesseract.image_to_string(img)
-        print(result)
+        print("驗證碼:{:}".format(result))
         return result
 
     # 驗證碼輸入框
