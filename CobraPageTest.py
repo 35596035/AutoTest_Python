@@ -18,15 +18,15 @@ import pytesseract
 #抓取tesseract執行檔
 pytesseract.pytesseract.tesseract_cmd = "C:\Program Files\Tesseract-OCR\\tesseract.exe"
 
-driver = webdriver.Chrome()
+#driver = webdriver.Chrome()
 #driver.get("https://192.168.127.51:8443/tw/#")
-driver.get("https://192.168.127.55:8443/tw/#")
+#driver.get("https://192.168.127.55:8443/tw/#")
 
-driver.maximize_window()
+#driver.maximize_window()
 #driver.set_window_size(1280,1024) 視窗大小
-action = ActionChains(driver)
+#action = ActionChains(driver)
 
-fn_AutoTest = fn_AutoTest.Driver(driver,action)
+#fn_AutoTest = fn_AutoTest.Driver(driver,action)
 
 fn_AutoTest.Show()
 # ---------------
@@ -84,3 +84,5 @@ fn_AutoTest.homePage()
 fn_AutoTest.LogOut_Page()
 
 driver.save_screenshot('LogOut.png')
+
+fn_AutoTest.Drive2().homePage2()

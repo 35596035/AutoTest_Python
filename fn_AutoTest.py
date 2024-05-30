@@ -18,7 +18,12 @@ import pytesseract
 pytesseract.pytesseract.tesseract_cmd = "C:\Program Files\Tesseract-OCR\\tesseract.exe"
 
 class Driver():
-    def __init__(self, driver, action):
+    def __init__(self):
+        driver = webdriver.Chrome()
+        driver.get("https://192.168.127.55:8443/tw/#")
+        driver.maximize_window()
+        action = ActionChains(driver)
+        #-----------
         self.d = driver
         self.a = action
 
