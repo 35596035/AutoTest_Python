@@ -125,8 +125,8 @@ class Driver():
         time.sleep(2)
 
 class Drive2(Driver):
-    def __init__(self, driver, action):
-        super().__init__(driver, action)
+    def __init__(self):
+        super().__init__()
 
     def homePage2(self):
         ele = self.d.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[1]/a")
