@@ -19,7 +19,8 @@ import pytesseract
 pytesseract.pytesseract.tesseract_cmd = "C:\Program Files\Tesseract-OCR\\tesseract.exe"
 
 driver = webdriver.Chrome()
-driver.get("https://192.168.127.51:8443/tw/#")
+#driver.get("https://192.168.127.51:8443/tw/#")
+driver.get("https://192.168.127.55:8443/tw/#")
 
 driver.maximize_window()
 #driver.set_window_size(1280,1024) 視窗大小
