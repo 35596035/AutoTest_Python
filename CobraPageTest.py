@@ -26,7 +26,7 @@ driver.maximize_window()
 #driver.set_window_size(1280,1024) 視窗大小
 action = ActionChains(driver)
 
-#fn_AutoTest = fn_AutoTest.Driver(driver,action)
+fn_AutoTest = fn_AutoTest.Driver(driver,action)
 
 fn_AutoTest.Show()
 # ---------------
@@ -68,7 +68,7 @@ while True:
         # 驗證碼判定&輸入
         fn_AutoTest.Input_Num(fn_AutoTest.ImgNum(path))
 
-driver.save_screenshot('LogIn.png')
+#driver.save_screenshot('LogIn.png')
 
 fn_AutoTest.System_PltPage()
 fn_AutoTest.Systen_Resorce_Page()
