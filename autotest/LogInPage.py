@@ -17,17 +17,11 @@ from PIL import Image
 # 圖片驗證碼
 import pytesseract
 
-# 抓取tesseract執行檔
-pytesseract.pytesseract.tesseract_cmd = "C:\Program Files\Tesseract-OCR\\tesseract.exe"
 
-
-class Driver():
+class Auto_LogIn:
     def __init__(self, driver, action):
         self.driver = driver
         self.action = action
-
-    def Show(self):
-        print(self.driver, "\n", self.action)
 
     # 連線不安全認證
     def NotSafe_Page(self):
@@ -46,7 +40,6 @@ class Driver():
 
         ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/div[2]/div/div/div[3]/div[1]/input")
         self.action.click(ele).send_keys("aegIS@123").perform()
-
         time.sleep(1)
 
     # 取得驗證碼圖片
@@ -83,43 +76,18 @@ class Driver():
         self.driver.find_element(By.XPATH, "/html/body/div[1]/header/nav/div/ul/li[2]/a")
         self.driver.save_screenshot('LogInHomePage.png')
 
-    # 儀錶板 > 模組狀態監控
-    def homePage(self):
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[1]/a")
-        self.action.click(ele).perform()
-        time.sleep(1)
-        # 模組狀態監控
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[1]/ul/li[2]/a")
-        self.action.click(ele).perform()
-        time.sleep(4)
-        self.driver.save_screenshot('LogInHomePage_Menu2.png')
-        time.sleep(2)
-
-    # 系統報表
-    def System_PltPage(self):
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[6]/a")
-        self.action.click(ele).perform()
-        # Driver.fn_Click(self, ele)
-        time.sleep(3)
-
-    # 系統資源狀況
-    def Systen_Resorce_Page(self):
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[6]/ul/li[2]/a")
-        self.action.click(ele).perform()
-        time.sleep(3)
-
-    # 系統管理
-    def Setting_Click(self):
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[11]/a")
-        self.action.click(ele).perform()
-        time.sleep(3)
-
-    # 使用者帳戶管理
-    def Setting_Menu_User(self):
-        ele = self.driver.find_element(By.XPATH, "/html/body/div[1]/aside/div/section/ul/li[11]/ul/li[4]/a")
-        self.action.click(ele).perform()
-        time.sleep(5)
-
-
-
-
+    def CheckLogIn(self, path):
+        while True:
+            try:
+                self.Check_UserELE()
+                break
+            except:
+                ele = self.driver.find_element(By.XPATH, "/html/body/div[4]/div[7]/div/button")
+                self.action.click(ele).perform()
+                print("驗證碼判定錯誤")
+                # 帳號密碼輸入
+                self.Inpot_LogIn_Page()
+                # 取得驗證碼圖片
+                self.get_captcha(path)
+                # 驗證碼判定&輸入
+                self.Input_Num(self.ImgNum(path))
