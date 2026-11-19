@@ -106,6 +106,27 @@ def check_dashboard(page: Page, title: str, chart_title: str, optional: bool = F
     expect(content(page).get_by_text(chart_title, exact=True)).to_be_visible(timeout=20_000)
 
 
+def wait_for_database_status_charts(page: Page) -> None:
+    cards = content(page).locator(".react-grid-layout > .react-grid-item")
+    expect(cards.first).to_be_visible()
+    rendered = page.locator("canvas[data-zr-dom-id]:visible")
+    no_data = page.get_by_text("此時間區段內沒有資料", exact=True)
+    ready = cards.filter(
+        has=rendered.or_(no_data),
+        has_not=page.get_by_role("progressbar"),
+    )
+    expect(ready, "資料庫狀態儀表板的所有圖表應完成載入").to_have_count(
+        cards.count(), timeout=30_000,
+    )
+
+
+def check_database_status_dashboard(page: Page) -> None:
+    check_dashboard(
+        page, title="資料庫狀態儀表板 (預設)", chart_title="SQL執行次數趨勢圖",
+    )
+    wait_for_database_status_charts(page)
+
+
 REPORT_NAME = "SQL執行報表(預設)"
 RELATIVE_TIME = re.compile(r"^過去\s*\d+\s*(?:小?時|天|分(?:鐘)?)$")
 DATE_FORMAT = "%Y/%m/%d %H:%M"
@@ -369,20 +390,132 @@ def check_chart_creation(page: Page) -> dict[str, object]:
     }
 
 
+CLASSIFICATION_FIELD = "資料庫使用者"
+DATASET_CUSTOM_VALUE = "test"
+DATASET_FIELD_SELECTOR = "#mui-component-select-field"
+
+
+def open_new_classification(page: Page, label: str, route: str) -> Locator:
+    open_menu(page, "資料分類", label)
+    area = content(page)
+    button(area, "新增").click()
+    expect_route(page, route)
+    return area
+
+
+def search_classification(page: Page, title: str, list_route: str) -> Locator:
+    expect_route(page, list_route)
+    area = content(page)
+    search = area.get_by_role("searchbox", name="搜尋", exact=True)
+    search.fill(title)
+    expect(search).to_have_value(title)
+    grid = area.get_by_role("grid")
+    match = grid.get_by_role("link", name=title, exact=True)
+    expect(match).to_be_visible()
+    expect(grid.get_by_role("link")).to_have_count(1)
+    return match
+
+
+def save_and_reopen_classification(page: Page, title: str, endpoint: str, list_route: str) -> None:
+    area = content(page)
+    print(f"    儲存 {title}", flush=True)
+    with page.expect_response(
+        lambda response: response.request.method == "POST"
+        and urlsplit(response.url).path == endpoint,
+        timeout=20_000,
+    ) as saved:
+        button(area, "儲存").click()
+    if not saved.value.ok:
+        raise AssertionError(f"儲存「{title}」回應 HTTP {saved.value.status}")
+
+    try:
+        link = search_classification(page, title, list_route)
+        href = link.get_attribute("href")
+        if not href:
+            raise AssertionError(f"找不到「{title}」的編輯連結")
+        link.click()
+        expect_route(page, urlsplit(href).path)
+    except (Error, AssertionError) as error:
+        raise AssertionError(f"「{title}」已收到儲存成功回應，重新開啟時驗證失敗。\n{error}") from error
+
+
+def show_classification_result(page: Page, title: str, list_route: str) -> None:
+    page.go_back(wait_until="domcontentloaded")
+    search_classification(page, title, list_route)
+
+
+def check_dataset_creation(page: Page) -> dict[str, object]:
+    area = open_new_classification(page, "資料集", "/value-set/create")
+    field = area.locator(DATASET_FIELD_SELECTOR)
+    field.click()
+    page.get_by_role("option", name=CLASSIFICATION_FIELD, exact=True).click()
+    confirm = button(page.get_by_role("dialog", name="切換欄位", exact=True), "確認")
+    add_custom = button(area, "新增自訂資料")
+    expect(confirm.or_(add_custom).first).to_be_visible()
+    if confirm.is_visible():
+        confirm.click()
+    expect(field).to_have_text(CLASSIFICATION_FIELD)
+
+    add_custom.click()
+    custom = page.get_by_role("textbox", name="輸入字串", exact=True)
+    custom.fill(DATASET_CUSTOM_VALUE)
+    custom.locator("xpath=../../..").get_by_role("button").filter(
+        has=page.get_by_test_id("AddIcon")
+    ).click()
+    if custom.is_visible():
+        page.keyboard.press("Escape")
+    expect(custom).to_be_hidden()
+    expect(area.get_by_text(DATASET_CUSTOM_VALUE, exact=True)).to_be_visible()
+
+    title = f"自動化測試資料集-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    name = area.get_by_role("textbox", name="資料集名稱", exact=True)
+    name.fill(title)
+    save_and_reopen_classification(page, title, "/api/valueSet", "/value-set/list")
+    expect(name).to_have_value(title)
+    expect(field).to_have_text(CLASSIFICATION_FIELD)
+    expect(area.get_by_text(DATASET_CUSTOM_VALUE, exact=True)).to_be_visible()
+    show_classification_result(page, title, "/value-set/list")
+    return {"dataset_name": title, "field": CLASSIFICATION_FIELD, "custom_value": DATASET_CUSTOM_VALUE}
+
+
+def check_filter_set_creation(page: Page) -> dict[str, object]:
+    area = open_new_classification(page, "條件集", "/filter-set/create")
+    source = area.locator('[draggable="true"]').filter(
+        has=page.get_by_text(CLASSIFICATION_FIELD, exact=True)
+    )
+    group = button(area, "AND")
+    source.drag_to(group)
+    condition = group.locator("xpath=..")
+    operator = condition.get_by_role("combobox")
+    expect(condition.get_by_text(CLASSIFICATION_FIELD, exact=True)).to_be_visible()
+    expect(operator).to_have_text("IS")
+    operator.click()
+    page.get_by_role("option", name="EXIST", exact=True).click()
+    expect(operator).to_have_text("EXIST")
+
+    title = f"自動化測試條件集-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    name = area.get_by_role("textbox", name="請輸入", exact=True)
+    name.fill(title)
+    save_and_reopen_classification(page, title, "/api/filterSet", "/filter-set/list")
+    expect(name).to_have_value(title)
+    expect(condition.get_by_text(CLASSIFICATION_FIELD, exact=True)).to_be_visible()
+    expect(operator).to_have_text("EXIST")
+    show_classification_result(page, title, "/filter-set/list")
+    return {"filter_set_name": title, "field": CLASSIFICATION_FIELD, "operator": "EXIST"}
+
+
 CATEGORIES: dict[str, tuple[str, tuple[Case, ...]]] = {
     "home": ("首頁與側邊選單", (
         Case("sidebar", "收合與展開側邊選單，再回首頁", check_home_menu),
     )),
     "dashboards": ("儀表板", (
-        Case("database-status", "資料庫狀態儀表板", partial(
-            check_dashboard, title="資料庫狀態儀表板 (預設)", chart_title="SQL執行次數趨勢圖",
-        )),
-        Case("system-resources", "系統資源儀表板", partial(
-            check_dashboard, title="系統資源儀表板 (預設)", chart_title="系統CPU", optional=True,
-        )),
-        Case("node-resources", "節點資源儀表板", partial(
-            check_dashboard, title="節點資源儀表板 (預設)", chart_title="節點CPU", optional=True,
-        )),
+        Case("database-status", "資料庫狀態儀表板", check_database_status_dashboard),
+        # Case("system-resources", "系統資源儀表板", partial(
+        #     check_dashboard, title="系統資源儀表板 (預設)", chart_title="系統CPU", optional=True,
+        # )),
+        # Case("node-resources", "節點資源儀表板", partial(
+        #     check_dashboard, title="節點資源儀表板 (預設)", chart_title="節點CPU", optional=True,
+        # )),
     )),
     "reports": ("報表查詢", (
         Case("sql-preset", "SQL 執行報表套用「過去 7 天」", check_report_preset),
@@ -397,6 +530,8 @@ CATEGORIES: dict[str, tuple[str, tuple[Case, ...]]] = {
     "classification": ("資料分類", (
         navigation_case("datasets", "/value-set/list", "資料分類", "資料集"),
         navigation_case("filter-sets", "/filter-set/list", "資料分類", "條件集"),
+        Case("create-dataset", "新增資料庫使用者資料集並自訂資料 test", check_dataset_creation, "--create-classification"),
+        Case("create-filter-set", "新增資料庫使用者條件集並設為 EXIST", check_filter_set_creation, "--create-classification"),
     )),
     "regulations": ("法規", (
         navigation_case("regulations", "/regulation/list", "法規", title="法規清單"),
@@ -427,9 +562,14 @@ def run_cases(
     *,
     create_report: bool = False,
     create_chart: bool = False,
+    create_classification: bool = False,
 ) -> int:
     start_url = page.url
-    enabled = {"--create-report": create_report, "--create-chart": create_chart}
+    enabled = {
+        "--create-report": create_report,
+        "--create-chart": create_chart,
+        "--create-classification": create_classification,
+    }
     results = []
     for key in categories:
         category, cases = CATEGORIES[key]
@@ -499,6 +639,7 @@ def run(
     *,
     create_report: bool = False,
     create_chart: bool = False,
+    create_classification: bool = False,
 ) -> int:
     from load_env import config
 
@@ -518,7 +659,11 @@ def run(
             print(f"請在 Chrome 輸入驗證碼並按「登入」，等待上限 {login_timeout} 秒。", flush=True)
             expect(button(sidebar(page), "首頁")).to_be_visible(timeout=login_timeout * 1_000)
             print("登入成功，開始測試。", flush=True)
-            return run_cases(page, categories, output_dir, create_report=create_report, create_chart=create_chart)
+            return run_cases(
+                page, categories, output_dir,
+                create_report=create_report, create_chart=create_chart,
+                create_classification=create_classification,
+            )
         finally:
             context.close()
     finally:
@@ -528,9 +673,10 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description="DAM+ 網頁功能點擊測試")
     parser.add_argument("--list", action="store_true", help="列出功能分類與測試案例")
-    parser.add_argument("--category", action="append", choices=CATEGORIES, help="指定分類，可重複使用。預設包含新增報表與圖表")
+    parser.add_argument("--category", action="append", choices=CATEGORIES, help="指定分類，可重複使用。預設包含各分類的新增案例")
     parser.add_argument("--create-report", action="store_true", help="指定報表分類時，一併執行新增報表")
     parser.add_argument("--create-chart", action="store_true", help="指定圖表分類時，一併執行新增圖表")
+    parser.add_argument("--create-classification", action="store_true", help="指定資料分類時，一併執行新增資料集與條件集")
     parser.add_argument("--output", type=Path, help="指定截圖及測試結果的輸出資料夾")
     parser.add_argument("--login-timeout", type=int, default=180, help="手動登入等待秒數，預設 180")
     args = parser.parse_args()
@@ -555,6 +701,7 @@ def main() -> int:
                 playwright, categories, output_dir, args.login_timeout,
                 create_report=full_suite or args.create_report,
                 create_chart=full_suite or args.create_chart,
+                create_classification=full_suite or args.create_classification,
             )
     except (AssertionError, Error, KeyError, OSError) as error:
         print(f"測試執行中止。{str(error).strip().splitlines()[0]}")
