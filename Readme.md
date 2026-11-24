@@ -2,7 +2,7 @@
 
 使用既有的 `.env` 與 Chrome 執行 `main.py`。程式會填入測試帳號與密碼，請在開啟的 Chrome 視窗輸入驗證碼並按「登入」。登入後會依功能順序自動操作。
 
-直接執行 `python main.py` 會跑全部分類，並各新增及儲存一筆測試報表、圖表、資料集和條件集。指定 `--category` 時，可以用 `--create-report`、`--create-chart` 或 `--create-classification` 加入對應的新增案例。
+直接執行 `python main.py` 會跑全部分類，並各新增及儲存一筆測試報表、圖表、資料集和條件集。新增、編輯、刪除案例會另外建立臨時資料，編輯後核對識別碼，再刪除該案例建立的資料並重新查找確認。指定 `--category` 時，可以加上 `--crud` 執行對應的新增、編輯、刪除案例，或用既有的 `--create-report`、`--create-chart`、`--create-classification` 執行會保留結果的新增案例。
 
 ```powershell
 python -m pip install playwright python-dotenv
@@ -12,22 +12,25 @@ python main.py --category reports --category charts
 python main.py --category reports --create-report
 python main.py --category charts --create-chart
 python main.py --category classification --create-classification
+python main.py --category dashboards --category reports --category charts --category classification --category regulations --crud
 ```
 
 | 分類 | `--category` | 驗證內容 |
 | --- | --- | --- |
 | 首頁與側邊選單 | `home` | 收合、展開、回首頁 |
-| 儀表板 | `dashboards` | 開啟資料庫狀態、系統資源與節點資源儀表板。資料庫狀態儀表板會等各圖表載入，或顯示沒有資料後再截圖 |
-| 報表查詢 | `reports` | SQL 執行報表查詢、回傳值查詢和新增報表 |
-| 統計圖表 | `charts` | 搜尋並開啟 SQL 執行次數趨勢圖，以及新增圖表 |
-| 資料分類 | `classification` | 資料集與條件集清單，以及新增、儲存和核對各一筆 |
-| 法規 | `regulations` | 法規清單 |
-| 排程與告警 | `alerts` | 排程、週期告警、即時告警、歷史紀錄 |
-| 事件管理 | `events` | 事件審核、審核歷程 |
-| 簽核流程 | `approval` | 簽核流程清單 |
+| 儀表板 | `dashboards` | 等資料庫狀態儀表板載入後截圖，另驗證臨時儀表板的新增、改名及刪除 |
+| 報表查詢 | `reports` | SQL 執行報表、回傳值查詢，以及報表新增、改名及刪除 |
+| 統計圖表 | `charts` | 搜尋並開啟 SQL 執行次數趨勢圖，以及圖表新增、改名及刪除 |
+| 資料分類 | `classification` | 資料集與條件集清單，以及各自的新增、改名及刪除 |
+| 法規 | `regulations` | 法規清單，以及臨時法規的新增、改名及刪除 |
+| 排程與告警 | `alerts` | 排程類型切換與取消、週期告警時間預覽、即時告警觸發條件草稿及歷史紀錄 |
+| 事件管理 | `events` | 事件審核、審核歷程及處理中／結案狀態篩選 |
+| 簽核流程 | `approval` | 簽核流程清單、草稿輸入、知會預設值及取消 |
 | 系統管理 | `system` | 稽核日誌清單 |
 
 每次執行會在 `screenshots` 下建立含時間戳記的資料夾，依分類儲存畫面，並在 `summary.json` 記錄通過、失敗和略過的案例。可用 `--output` 指定輸出位置，使用 `--login-timeout` 調整登入等待秒數。若站台未提供系統資源或節點資源儀表板，對應案例會標記為略過。個別案例失敗後會繼續執行，整次執行以結束碼 `1` 回報失敗。
+
+新增或刪除完成後，程式會等網站右下角的成功提示顯示，再另外截取當前視窗。以報表為例，`reports/report-crud-create-status.png` 和 `reports/report-crud-delete-status.png` 分別記錄創建及刪除成功。儀表板、圖表、資料集及條件集也使用相同命名方式。法規頁透過清單更新呈現結果，會截取新增後找到該筆資料、刪除後查無該筆資料的清單。`summary.json` 的 `status_screenshots` 和 `result_screenshots` 分別記錄提示及清單截圖路徑，`screenshot` 記錄案例最後的畫面。操作截圖取得失敗時，測試仍會繼續核對資料，並在 `operation_screenshot_errors` 記下原因。
 
 新增報表會從人、事、時、地、物各隨機加入一個欄位，以過去 30 分鐘執行查詢，再以含時間戳記的名稱儲存。程式會重新開啟報表核對設定，在該次執行資料夾下儲存 `reports/create-report.png`，並在 `summary.json` 記錄報表名稱、所選欄位及查詢時段。
 

@@ -1,18 +1,26 @@
 import argparse
 import json
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from random import choice
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import Error, Locator, Page, Playwright, Response, expect, sync_playwright
 
 
 USERNAME_SELECTOR = 'input[name="username"]'
+STATUS_MESSAGES = {
+    "create": re.compile(r"(?:創建|建立|新增|儲存)[^\n。]{0,20}成功|成功(?:創建|建立|新增|儲存)"),
+    "delete": re.compile(r"刪除[^\n。]{0,20}成功|成功刪除"),
+}
+operation_screenshot_recorder: ContextVar[Callable[[str, bool], None] | None] = ContextVar(
+    "operation_screenshot_recorder", default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -241,10 +249,6 @@ def select_random_report_fields(page: Page) -> dict[str, str]:
     return fields
 
 
-def is_query_creation(response: Response) -> bool:
-    return response.request.method == "POST" and urlsplit(response.url).path == "/api/qrys"
-
-
 def verify_saved_report(page: Page, title: str, fields: dict[str, str]) -> None:
     expect_route(page, "/report-list")
     area = content(page)
@@ -277,10 +281,7 @@ def check_report_creation(page: Page) -> dict[str, object]:
     expect(dialog).to_be_hidden()
     expect(area.get_by_text(title, exact=True)).to_be_visible()
     print(f"    儲存報表 {title}", flush=True)
-    with page.expect_response(is_query_creation, timeout=20_000) as save:
-        button(area, "儲存").click()
-    if not save.value.ok:
-        raise AssertionError(f"儲存「{title}」回應 HTTP {save.value.status}")
+    save_change(page, button(area, "儲存"), "/api/qrys", ("POST",))
 
     try:
         verify_saved_report(page, title, fields)
@@ -294,12 +295,13 @@ def check_chart(page: Page) -> None:
     open_menu(page, "統計圖表")
     area = content(page)
     grid = area.get_by_role("grid")
-    unrelated = grid.get_by_role("link", name="SQL分類圓餅圖 (預設)", exact=True)
-    expect(unrelated).to_be_visible()
+    expect(grid.get_by_role("columnheader", name="名稱", exact=True)).to_be_visible()
     area.get_by_role("searchbox", name="搜尋").fill("SQL執行次數趨勢圖")
-    expect(unrelated).to_be_hidden()
+    expect(grid.get_by_role("link")).to_have_count(1)
     open_detail(page, grid.get_by_role("link", name=title, exact=True), title)
-    expect(area.locator("svg").filter(has_text="次數")).to_be_visible(timeout=20_000)
+    chart = area.locator('canvas[data-zr-dom-id]').or_(area.locator("svg").filter(has_text="次數"))
+    no_data = area.get_by_text("此時間區段內沒有資料", exact=True)
+    expect(chart.or_(no_data).first).to_be_visible(timeout=20_000)
 
 
 def chart_axis(area: Locator, name: str) -> Locator:
@@ -327,7 +329,14 @@ def chart_field_list(page: Page) -> Locator:
 def drag_chart_field(page: Page, fields: Locator, field: str, axis: str) -> None:
     target = chart_axis(content(page), axis)
     source = fields.locator('[draggable="true"]').filter(has=page.get_by_text(field, exact=True))
-    source.drag_to(target.get_by_text("拖入", exact=True))
+    drop_area = target.get_by_text("拖入", exact=True)
+    source.hover()
+    page.mouse.down()
+    try:
+        drop_area.hover()
+        drop_area.hover()
+    finally:
+        page.mouse.up()
     expect(target.get_by_text(field, exact=True)).to_be_visible()
 
 
@@ -371,10 +380,7 @@ def check_chart_creation(page: Page) -> dict[str, object]:
     expect(dialog).to_be_hidden()
     expect(area.get_by_text(title, exact=True)).to_be_visible()
     print(f"    儲存圖表 {title}", flush=True)
-    with page.expect_response(is_query_creation, timeout=20_000) as save:
-        button(area, "儲存").click()
-    if not save.value.ok:
-        raise AssertionError(f"儲存「{title}」回應 HTTP {save.value.status}")
+    save_change(page, button(area, "儲存"), "/api/qrys", ("POST",))
 
     try:
         reopened_period = verify_saved_chart(page, title)
@@ -419,14 +425,7 @@ def search_classification(page: Page, title: str, list_route: str) -> Locator:
 def save_and_reopen_classification(page: Page, title: str, endpoint: str, list_route: str) -> None:
     area = content(page)
     print(f"    儲存 {title}", flush=True)
-    with page.expect_response(
-        lambda response: response.request.method == "POST"
-        and urlsplit(response.url).path == endpoint,
-        timeout=20_000,
-    ) as saved:
-        button(area, "儲存").click()
-    if not saved.value.ok:
-        raise AssertionError(f"儲存「{title}」回應 HTTP {saved.value.status}")
+    save_change(page, button(area, "儲存"), endpoint, ("POST",))
 
     try:
         link = search_classification(page, title, list_route)
@@ -504,12 +503,258 @@ def check_filter_set_creation(page: Page) -> dict[str, object]:
     return {"filter_set_name": title, "field": CLASSIFICATION_FIELD, "operator": "EXIST"}
 
 
+def open_crud_list(page: Page, route: str) -> Locator:
+    page.goto(urljoin(page.url, route), wait_until="domcontentloaded")
+    expect_route(page, route)
+    grid = content(page).get_by_role("grid")
+    expect(grid).to_be_visible()
+    return grid
+
+
+def crud_row(page: Page, grid: Locator, title: str) -> Locator:
+    search = content(page).get_by_role("searchbox", name="搜尋", exact=True)
+    search.fill(title)
+    return grid.get_by_role("row").filter(
+        has=page.get_by_role("cell", name=title, exact=True)
+    )
+
+
+def capture_operation_screenshot(operation: str, *, has_toast: bool) -> None:
+    record_screenshot = operation_screenshot_recorder.get()
+    if record_screenshot:
+        record_screenshot(operation, has_toast)
+
+
+def save_change(
+    page: Page, trigger: Locator, endpoint: str, methods: tuple[str, ...], *, capture_toast: bool = True,
+) -> None:
+    def matches(response: Response) -> bool:
+        path = urlsplit(response.url).path
+        method = response.request.method
+        return method in methods and (
+            path == endpoint or (method in ("PUT", "PATCH") and path.startswith(f"{endpoint}/"))
+        )
+
+    with page.expect_response(matches, timeout=20_000) as saved:
+        trigger.click()
+    response = saved.value
+    method = response.request.method
+    if not response.ok:
+        raise AssertionError(f"{method} {endpoint} 回應 HTTP {response.status}")
+
+    operation = {"POST": "create", "DELETE": "delete"}.get(method)
+    if operation and capture_toast:
+        capture_operation_screenshot(operation, has_toast=True)
+
+
+def rename_report(page: Page, row: Locator, title: str) -> None:
+    row.get_by_role("link").click()
+    icon_button(page, "EditSharpIcon").click()
+    dialog = page.get_by_role("dialog", name="編輯報表", exact=True)
+    dialog.locator('input[type="text"]').fill(title)
+    button(dialog, "儲存").click()
+    expect(dialog).to_be_hidden()
+    save_change(page, button(content(page), "儲存"), "/api/qrys", ("PUT", "PATCH"))
+
+
+def rename_chart(page: Page, row: Locator, title: str) -> None:
+    row.get_by_role("link").click()
+    button(content(page), "編輯").click()
+    icon_button(page, "EditIcon").click()
+    dialog = page.get_by_role("dialog").filter(has=page.get_by_text("編輯圖表", exact=True))
+    dialog.locator('input[name="title"]').fill(title)
+    button(dialog, "儲存").click()
+    expect(dialog).to_be_hidden()
+    save_change(page, button(content(page), "更新"), "/api/qrys", ("PUT", "PATCH"))
+
+
+def rename_classification(
+    page: Page, row: Locator, title: str, *, field_name: str, endpoint: str,
+) -> None:
+    row.get_by_role("link").click()
+    area = content(page)
+    name = area.get_by_role("textbox", name=field_name, exact=True)
+    expect(name).not_to_have_value("")
+    name.fill(title)
+    save_change(page, button(area, "儲存"), endpoint, ("PUT", "PATCH"))
+
+
+def create_regulation(page: Page) -> dict[str, object]:
+    open_menu(page, "法規")
+    area = content(page)
+    button(area, "新增").click()
+    dialog = page.get_by_role("dialog", name="新增法規", exact=True)
+    title = f"自動化測試法規-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    dialog.get_by_role("textbox").fill(title)
+    save_change(page, button(dialog, "送出"), "/api/regulations", ("POST",), capture_toast=False)
+    expect(dialog).to_be_hidden()
+    expect(crud_row(page, area.get_by_role("grid"), title)).to_be_visible()
+    capture_operation_screenshot("create", has_toast=False)
+    return {"regulation_name": title}
+
+
+def set_dashboard_name(page: Page, title: str) -> None:
+    icon_button(page, "EditSharpIcon").click()
+    dialog = page.get_by_role("dialog", name="編輯儀表板", exact=True)
+    dialog.locator('input[type="text"]').fill(title)
+    button(dialog, "確認").click()
+    expect(dialog).to_be_hidden()
+
+
+def create_dashboard(page: Page) -> dict[str, object]:
+    open_menu(page, "儀表板")
+    area = content(page)
+    button(area, "新增").click()
+    expect_route(page, "/dashboard/editor")
+    title = f"自動化測試儀表板-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    set_dashboard_name(page, title)
+    save_change(page, button(area, "儲存"), "/api/qrys", ("POST",))
+    return {"dashboard_name": title}
+
+
+def rename_dashboard(page: Page, row: Locator, title: str) -> None:
+    row.get_by_role("link").click()
+    area = content(page)
+    button(area, "編輯").click()
+    set_dashboard_name(page, title)
+    save_change(page, button(area, re.compile(r"^(儲存|更新)$")), "/api/qrys", ("PUT", "PATCH"))
+
+
+def rename_regulation(page: Page, row: Locator, title: str) -> None:
+    row.hover()
+    row.get_by_role("button").filter(has=page.get_by_test_id("EditSharpIcon")).click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("textbox").fill(title)
+    save_change(page, button(dialog, "送出"), "/api/regulations", ("PUT", "PATCH"))
+    expect(dialog).to_be_hidden()
+
+
+def delete_crud_row(page: Page, grid: Locator, row: Locator, endpoint: str, record_id: str) -> None:
+    row.get_by_role("checkbox", name="Select row", exact=True).check()
+    expect(grid.get_by_role("row", selected=True)).to_have_count(1)
+    expect(row).to_have_attribute("aria-selected", "true")
+    button(content(page), "刪除").click()
+    dialog = page.get_by_role("dialog", name="刪除確認", exact=True)
+    expect(dialog).to_contain_text(re.compile(r"所選的\s*1\s*個項目"))
+    save_change(
+        page, button(dialog, "確認刪除"), f"{endpoint}/{record_id}", ("DELETE",),
+        capture_toast=endpoint != "/api/regulations",
+    )
+    expect(dialog).to_be_hidden()
+
+
+def check_crud_lifecycle(
+    page: Page,
+    *,
+    create: Callable[[Page], dict[str, object]],
+    name_key: str,
+    route: str,
+    endpoint: str,
+    rename: Callable[[Page, Locator, str], None],
+) -> dict[str, object]:
+    record = create(page)
+    title = str(record[name_key])
+    grid = open_crud_list(page, route)
+    row = crud_row(page, grid, title)
+    record_id = row.get_attribute("data-id")
+    if not record_id:
+        raise AssertionError(f"找不到本次新增的資料識別碼「{title}」")
+
+    updated_title = f"{title}-已編輯"
+    print(f"    編輯 {title}", flush=True)
+    try:
+        rename(page, row, updated_title)
+        remove_crud_record(page, route, endpoint, updated_title, record_id)
+    except (Error, AssertionError) as error:
+        raise AssertionError(f"臨時測試資料識別碼 {record_id}，名稱「{title}」。\n{error}") from error
+    return {"created_name": title, "edited_name": updated_title, "record_id": record_id, "deleted": True}
+
+
+def remove_crud_record(page: Page, route: str, endpoint: str, title: str, record_id: str) -> None:
+    grid = open_crud_list(page, route)
+    updated = crud_row(page, grid, title)
+    expect(updated).to_have_attribute("data-id", record_id)
+    print(f"    刪除 {title}", flush=True)
+    delete_crud_row(page, grid, updated, endpoint, record_id)
+    grid = open_crud_list(page, route)
+    removed = crud_row(page, grid, title)
+    expect(grid.get_by_text(re.compile(r"^(?:No rows|No results found)\.?$"))).to_be_visible()
+    expect(removed).to_have_count(0)
+    if endpoint == "/api/regulations":
+        capture_operation_screenshot("delete", has_toast=False)
+
+
+def check_schedule_draft(page: Page) -> None:
+    open_menu(page, "排程與告警", "排程")
+    button(content(page), "新增").click()
+    dialog = page.get_by_role("dialog", name="新增排程", exact=True)
+    periodic = dialog.get_by_role("radio", name="週期性", exact=True)
+    once = dialog.get_by_role("radio", name="一次性", exact=True)
+    expect(periodic).to_be_checked()
+    once.check()
+    expect(once).to_be_checked()
+    button(dialog, "取消").click()
+    expect(dialog).to_be_hidden()
+    expect_route(page, "/schedule/list")
+
+
+def check_alert_draft(page: Page, *, label: str, route: str, periodic: bool) -> None:
+    open_menu(page, "排程與告警", label)
+    area = content(page)
+    button(area, "新增").click()
+    expect_route(page, route)
+    name = area.get_by_role("textbox", name="輸入告警名稱", exact=True)
+    title = f"自動化測試{label}草稿"
+    name.fill(title)
+    expect(name).to_have_value(title)
+    level = button(area, "低")
+    level.click()
+    expect(level).to_have_attribute("aria-pressed", "true")
+    expect(area.get_by_role("tab", name="發送設定", exact=True)).to_be_visible()
+    if periodic:
+        expect(area.get_by_role("table").get_by_role("row")).to_have_count(4)
+    else:
+        group = button(area, "AND")
+        area.locator('[draggable="true"]').filter(
+            has=page.get_by_text(CLASSIFICATION_FIELD, exact=True)
+        ).drag_to(group)
+        expect(group.locator("xpath=..").get_by_role("combobox")).to_have_text("IS")
+
+
+def check_approval_draft(page: Page) -> None:
+    open_menu(page, "簽核流程")
+    area = content(page)
+    button(area, "新增").click()
+    expect_route(page, "/approval/create")
+    name = area.get_by_role("textbox", name="輸入簽核流程名稱", exact=True)
+    name.fill("自動化測試簽核草稿")
+    expect(name).to_have_value("自動化測試簽核草稿")
+    expect(area.get_by_role("checkbox", name="啟用知會", exact=True)).not_to_be_checked()
+    button(area, "取消").click()
+    expect_route(page, "/approval/list")
+
+
+def check_event_history_status(page: Page) -> None:
+    check_page(page, ("事件管理", "審核歷程"), "/approval-trail", "審核歷程")
+    area = content(page)
+    status = area.get_by_role("combobox", name="狀態", exact=True)
+    for option in ("處理中", "結案"):
+        status.click()
+        page.get_by_role("option", name=option, exact=True).click()
+        expect(status).to_have_text(option)
+        expect(area.get_by_role("grid").get_by_role("columnheader", name="狀態", exact=True)).to_be_visible()
+
+
 CATEGORIES: dict[str, tuple[str, tuple[Case, ...]]] = {
     "home": ("首頁與側邊選單", (
         Case("sidebar", "收合與展開側邊選單，再回首頁", check_home_menu),
     )),
     "dashboards": ("儀表板", (
         Case("database-status", "資料庫狀態儀表板", check_database_status_dashboard),
+        Case("dashboard-crud", "新增、編輯及刪除臨時儀表板", partial(
+            check_crud_lifecycle, create=create_dashboard, name_key="dashboard_name",
+            route="/dashboard", endpoint="/api/qrys", rename=rename_dashboard,
+        ), "--crud"),
         # Case("system-resources", "系統資源儀表板", partial(
         #     check_dashboard, title="系統資源儀表板 (預設)", chart_title="系統CPU", optional=True,
         # )),
@@ -522,32 +767,63 @@ CATEGORIES: dict[str, tuple[str, tuple[Case, ...]]] = {
         Case("sql-range", "SQL 執行報表套用指定日期區間", check_report_range),
         navigation_case("return-data", "/return-data", "報表查詢", "回傳值查詢"),
         Case("create-report", "新增報表，依人事時地物選欄位、查詢並儲存", check_report_creation, "--create-report"),
+        Case("report-crud", "新增、編輯及刪除臨時報表", partial(
+            check_crud_lifecycle, create=check_report_creation, name_key="report_name",
+            route="/report-list", endpoint="/api/qrys", rename=rename_report,
+        ), "--crud"),
     )),
     "charts": ("統計圖表", (
         Case("sql-trend", "搜尋並開啟資料庫 SQL 執行次數趨勢圖", check_chart),
         Case("create-chart", "新增資料庫使用者次數圖表、重整並儲存", check_chart_creation, "--create-chart"),
+        Case("chart-crud", "新增、編輯及刪除臨時圖表", partial(
+            check_crud_lifecycle, create=check_chart_creation, name_key="chart_name",
+            route="/chart", endpoint="/api/qrys", rename=rename_chart,
+        ), "--crud"),
     )),
     "classification": ("資料分類", (
         navigation_case("datasets", "/value-set/list", "資料分類", "資料集"),
         navigation_case("filter-sets", "/filter-set/list", "資料分類", "條件集"),
         Case("create-dataset", "新增資料庫使用者資料集並自訂資料 test", check_dataset_creation, "--create-classification"),
         Case("create-filter-set", "新增資料庫使用者條件集並設為 EXIST", check_filter_set_creation, "--create-classification"),
+        Case("dataset-crud", "新增、編輯及刪除臨時資料集", partial(
+            check_crud_lifecycle, create=check_dataset_creation, name_key="dataset_name",
+            route="/value-set/list", endpoint="/api/valueSet",
+            rename=partial(rename_classification, field_name="資料集名稱", endpoint="/api/valueSet"),
+        ), "--crud"),
+        Case("filter-set-crud", "新增、編輯及刪除臨時條件集", partial(
+            check_crud_lifecycle, create=check_filter_set_creation, name_key="filter_set_name",
+            route="/filter-set/list", endpoint="/api/filterSet",
+            rename=partial(rename_classification, field_name="請輸入", endpoint="/api/filterSet"),
+        ), "--crud"),
     )),
     "regulations": ("法規", (
         navigation_case("regulations", "/regulation/list", "法規", title="法規清單"),
+        Case("regulation-crud", "新增、編輯及刪除臨時法規", partial(
+            check_crud_lifecycle, create=create_regulation, name_key="regulation_name",
+            route="/regulation/list", endpoint="/api/regulations", rename=rename_regulation,
+        ), "--crud"),
     )),
     "alerts": ("排程與告警", (
         navigation_case("schedules", "/schedule/list", "排程與告警", "排程"),
+        Case("schedule-draft", "切換排程類型並取消新增", check_schedule_draft),
         navigation_case("periodic-alerts", "/periodic-alert/list", "排程與告警", "週期告警"),
+        Case("periodic-alert-draft", "填寫週期告警草稿並核對執行時間預覽", partial(
+            check_alert_draft, label="週期告警", route="/periodic-alert/create", periodic=True,
+        )),
         navigation_case("real-time-alerts", "/realtime-alert/list", "排程與告警", "即時告警"),
+        Case("real-time-alert-draft", "填寫即時告警草稿並加入觸發條件", partial(
+            check_alert_draft, label="即時告警", route="/realtime-alert/create", periodic=False,
+        )),
         navigation_case("history", "/historical-record/list", "排程與告警", "歷史紀錄"),
     )),
     "events": ("事件管理", (
         navigation_case("review", "/approval-events", "事件管理", "事件審核"),
         navigation_case("history", "/approval-trail", "事件管理", "審核歷程"),
+        Case("history-status-filter", "切換審核歷程的處理中與結案篩選", check_event_history_status),
     )),
     "approval": ("簽核流程", (
         navigation_case("flows", "/approval/list", "簽核流程"),
+        Case("approval-draft", "填寫簽核流程草稿、檢查知會設定並取消", check_approval_draft),
     )),
     "system": ("系統管理", (
         navigation_case("audit-log", "/audit-log-list", "系統管理", "稽核日誌", title="稽核日誌清單"),
@@ -563,12 +839,14 @@ def run_cases(
     create_report: bool = False,
     create_chart: bool = False,
     create_classification: bool = False,
+    crud: bool = False,
 ) -> int:
     start_url = page.url
     enabled = {
         "--create-report": create_report,
         "--create-chart": create_chart,
         "--create-classification": create_classification,
+        "--crud": crud,
     }
     results = []
     for key in categories:
@@ -578,11 +856,30 @@ def run_cases(
             result = {"category": category, "id": f"{key}/{case.id}", "name": case.name}
             results.append(result)
             page_errors: list[str] = []
+            status_screenshots: dict[str, str] = {}
+            result_screenshots: dict[str, str] = {}
+            operation_screenshot_errors: dict[str, str] = {}
 
             def record_page_error(error: Error) -> None:
                 page_errors.append(str(error))
 
+            def record_operation(operation: str, has_toast: bool) -> None:
+                kind = "status" if has_toast else "result"
+                screenshot = Path(key) / f"{case.id}-{operation}-{kind}.png"
+                try:
+                    if has_toast:
+                        toast = page.get_by_role("alert").filter(has_text=STATUS_MESSAGES[operation]).last
+                        expect(toast).to_be_in_viewport(ratio=0.9, timeout=8_000)
+                    (output_dir / screenshot).parent.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=output_dir / screenshot, timeout=5_000)
+                except (AssertionError, Error, OSError) as error:
+                    operation_screenshot_errors[f"{operation}-{kind}"] = str(error).strip()
+                else:
+                    screenshots = status_screenshots if has_toast else result_screenshots
+                    screenshots[operation] = screenshot.as_posix()
+
             page.on("pageerror", record_page_error)
+            screenshot_token = operation_screenshot_recorder.set(record_operation)
             try:
                 if case.required_option and not enabled[case.required_option]:
                     raise CaseSkipped(f"使用 {case.required_option} 執行此新增案例")
@@ -600,7 +897,17 @@ def run_cases(
                 if data:
                     result["data"] = data
             finally:
+                operation_screenshot_recorder.reset(screenshot_token)
                 page.remove_listener("pageerror", record_page_error)
+
+            if status_screenshots:
+                result["status_screenshots"] = status_screenshots
+            if result_screenshots:
+                result["result_screenshots"] = result_screenshots
+            if operation_screenshot_errors:
+                result["operation_screenshot_errors"] = operation_screenshot_errors
+                if result["status"] == "PASS":
+                    result.update(status="FAIL", detail="新增或刪除截圖取得失敗，詳見 operation_screenshot_errors。")
 
             can_capture = not page.is_closed() and not page.locator(USERNAME_SELECTOR).is_visible()
             if result["status"] != "SKIP" and can_capture:
@@ -640,6 +947,7 @@ def run(
     create_report: bool = False,
     create_chart: bool = False,
     create_classification: bool = False,
+    crud: bool = False,
 ) -> int:
     from load_env import config
 
@@ -663,6 +971,7 @@ def run(
                 page, categories, output_dir,
                 create_report=create_report, create_chart=create_chart,
                 create_classification=create_classification,
+                crud=crud,
             )
         finally:
             context.close()
@@ -673,10 +982,11 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description="DAM+ 網頁功能點擊測試")
     parser.add_argument("--list", action="store_true", help="列出功能分類與測試案例")
-    parser.add_argument("--category", action="append", choices=CATEGORIES, help="指定分類，可重複使用。預設包含各分類的新增案例")
+    parser.add_argument("--category", action="append", choices=CATEGORIES, help="指定分類，可重複使用。預設包含新增、編輯與刪除測試")
     parser.add_argument("--create-report", action="store_true", help="指定報表分類時，一併執行新增報表")
     parser.add_argument("--create-chart", action="store_true", help="指定圖表分類時，一併執行新增圖表")
     parser.add_argument("--create-classification", action="store_true", help="指定資料分類時，一併執行新增資料集與條件集")
+    parser.add_argument("--crud", action="store_true", help="指定分類時，一併驗證臨時測試資料的新增、編輯與刪除")
     parser.add_argument("--output", type=Path, help="指定截圖及測試結果的輸出資料夾")
     parser.add_argument("--login-timeout", type=int, default=180, help="手動登入等待秒數，預設 180")
     args = parser.parse_args()
@@ -702,6 +1012,7 @@ def main() -> int:
                 create_report=full_suite or args.create_report,
                 create_chart=full_suite or args.create_chart,
                 create_classification=full_suite or args.create_classification,
+                crud=full_suite or args.crud,
             )
     except (AssertionError, Error, KeyError, OSError) as error:
         print(f"測試執行中止。{str(error).strip().splitlines()[0]}")
