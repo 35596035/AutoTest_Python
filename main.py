@@ -949,8 +949,9 @@ def run(
     create_classification: bool = False,
     crud: bool = False,
 ) -> int:
-    from load_env import config
+    from load_env import load_config
 
+    config = load_config()
     browser = playwright.chromium.launch(channel="chrome", headless=False)
     try:
         context = browser.new_context(

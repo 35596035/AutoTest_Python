@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block nav %}<a class="nav-link" href="#history">執行紀錄</a>{% endblock %}
+{% block main %}
+  <div class="page-heading">
+    <h1>執行網頁測試</h1>
+    <p>輸入測試站台的參數並選擇案例分類。啟動後，請在 Chrome 視窗手動完成登入。</p>
+  </div>
+  <div class="dashboard">
+    <form class="panel configuration" action="{{ url_for('start') }}" method="post">
+      <input type="hidden" name="csrf" value="{{ token }}">
+      {% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+      <section aria-labelledby="connection-title">
+        <h2 id="connection-title">連線設定</h2>
+        <div class="fields">
+          {% for key, label in fields.items() %}
+            {% set password = key in ("TEST_PASSWORD", "TEST_CHANGE_PASSWORD") %}
+            <label class="field{% if key == 'BASE_URL' %} wide{% endif %}" for="{{ key }}">
+              <span>{{ label }}{% if key == "TEST_CHANGE_PASSWORD" %} <small>選填</small>{% endif %}</span>
+              <input id="{{ key }}" name="{{ key }}"
+                type="{{ 'password' if password else ('url' if key == 'BASE_URL' else 'text') }}"
+                {% if password %}autocomplete="new-password" aria-describedby="password-help"
+                {% else %}value="{{ values.get(key, '') }}" autocomplete="off"{% endif %}
+                {% if key == "BASE_URL" %}placeholder="https://example.test/login"{% endif %}>
+            </label>
+          {% endfor %}
+        </div>
+        <p class="help" id="password-help">使用預設站台與帳號時，密碼留白會沿用環境設定。變更用密碼保留供相容設定，現有案例尚未使用。</p>
+      </section>
+      <fieldset>
+        <legend>測試分類</legend>
+        <div class="choices">
+          {% for key, (name, cases) in categories.items() %}
+            <label class="choice">
+              <input type="checkbox" name="category" value="{{ key }}" {% if key in selected %}checked{% endif %}>
+              <span>{{ name }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>資料異動案例</legend>
+        <div class="options">
+          {% for key, name in test_options.items() %}
+            <label class="choice">
+              <input type="checkbox" name="option" value="{{ key }}" {% if key in options %}checked{% endif %}>
+              <span>{{ name }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <div class="form-actions"><button class="primary" type="submit">開始測試</button></div>
+    </form>
+    <section class="panel history" id="history" aria-labelledby="history-title">
+      <div class="history-heading">
+        <h2 id="history-title">執行紀錄</h2>
+        <span class="muted">{{ runs|length }} 筆</span>
+      </div>
+      {% if runs %}
+        <ul class="history-list">
+          {% for run in runs %}
+            <li>
+              <a href="{{ url_for('detail', run_id=run.id) }}">
+                <div class="record-title">
+                  <strong>{{ run.id }}</strong>
+                  <span class="badge {{ run.state }}">{{ run_states[run.state] }}</span>
+                </div>
+                <time datetime="{{ run.started_at }}">{{ run.started_at[:16]|replace('T', ' ') }}</time>
+                {% if run.counts is not none %}
+                  <div class="record-counts">
+                    {% for status, label in case_states.items() %}
+                      <span class="{{ status|lower }}">{{ label }} {{ run.counts[status] }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty">目前沒有測試紀錄。第一次執行完成後，報告會出現在這裡。</p>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

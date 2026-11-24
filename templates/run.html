@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}測試結果 · DAM+ 自動化測試{% endblock %}
+{% block nav %}<a class="nav-link" href="{{ url_for('index') }}">返回測試設定</a>{% endblock %}
+{% block main %}
+  <div class="page-heading report-heading">
+    <div>
+      <h1>測試結果</h1>
+      <p>{{ run.id }} · <time datetime="{{ run.started_at }}">{{ run.started_at[:19]|replace('T', ' ') }}</time>
+        {% if run.finished_at %} 至 <time datetime="{{ run.finished_at }}">{{ run.finished_at[:19]|replace('T', ' ') }}</time>{% endif %}
+      </p>
+      {% if run.categories %}
+        <p>{% for key in run.categories if key in categories %}{{ categories[key][0] }}{{ '、' if not loop.last }}{% endfor %}</p>
+      {% endif %}
+    </div>
+    <span class="badge {{ run.state }}" id="run-status">{{ run_states[run.state] }}</span>
+  </div>
+  {% if run.state in active_states %}
+    <section class="panel run-progress" data-state-url="{{ url_for('state', run_id=run.id) }}"
+      data-state="{{ run.state }}">
+      <p class="notice" role="status" id="run-message">{{ run.message }}</p>
+      <p class="help">等待手動登入的時間為 180 秒。</p>
+      <noscript><p><a href="{{ url_for('detail', run_id=run.id) }}">重新整理狀態</a></p></noscript>
+    </section>
+  {% elif run.state == 'aborted' %}
+    <p class="notice error" role="alert">{{ run.message }}</p>
+  {% else %}
+    <section class="metrics" aria-label="結果統計">
+      {% for status, label in case_states.items() %}
+        <div class="panel metric {{ status|lower }}">
+          <span>{{ label }}</span>
+          <strong>{{ run.counts[status] }}</strong>
+        </div>
+      {% endfor %}
+    </section>
+    <section class="panel report" aria-labelledby="results-title">
+      <div class="report-toolbar">
+        <h2 id="results-title">案例明細 <span class="muted">{{ run.results|length }} 筆</span></h2>
+        {% if run.results %}
+          <div class="filters" aria-label="篩選測試結果" hidden>
+            <button type="button" data-filter="all" aria-pressed="true">全部</button>
+            {% for status, label in case_states.items() %}
+              <button type="button" data-filter="{{ status }}" aria-pressed="false">{{ label }}</button>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+      {% if run.results %}
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th scope="col">案例</th><th scope="col">結果</th><th scope="col">截圖預覽</th></tr></thead>
+            <tbody>
+              {% for case in run.results %}
+                {% set status = case.status|default('') %}
+                {% set images = screenshots(case)|list %}
+                <tr data-result="{{ status }}">
+                  <td>
+                    <span class="case-category">{{ case.category|default('') }}</span>
+                    <strong class="case-name">{{ case.name|default(case.id|default('未命名案例')) }}</strong>
+                    {% if case.detail or case.data or case.page_errors or case.screenshot_error or case.operation_screenshot_errors %}
+                      <details class="case-detail">
+                        <summary>查看詳情</summary>
+                        {% if case.detail %}<pre>{{ case.detail }}</pre>{% endif %}
+                        {% if case.data %}<pre>{{ case.data|tojson(indent=2) }}</pre>{% endif %}
+                        {% for error in case.page_errors|default([]) %}<pre>{{ error }}</pre>{% endfor %}
+                        {% if case.screenshot_error %}<pre>{{ case.screenshot_error }}</pre>{% endif %}
+                        {% if case.operation_screenshot_errors %}<pre>{{ case.operation_screenshot_errors|tojson(indent=2) }}</pre>{% endif %}
+                      </details>
+                    {% endif %}
+                  </td>
+                  <td><span class="badge {{ status|lower }}">{{ case_states.get(status, '未知') }}</span></td>
+                  <td>
+                    {% if images %}
+                      <div class="image-links">
+                        {% for label, filename in images %}
+                          <a class="image-link" href="{{ url_for('image', run_id=run.id, filename=filename|replace('\\', '/')) }}"
+                            data-preview="{{ case.name|default('測試') }} · {{ label }}" target="_blank" rel="noopener">{{ label }}</a>
+                        {% endfor %}
+                      </div>
+                    {% else %}
+                      <span class="muted">無截圖</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p class="empty" id="empty-filter" role="status" hidden>沒有符合此篩選條件的案例。</p>
+        </div>
+      {% else %}
+        <p class="empty">這次測試沒有案例明細。</p>
+      {% endif %}
+    </section>
+    <dialog class="preview" id="preview" aria-labelledby="preview-title">
+      <div class="preview-heading">
+        <h2 id="preview-title">截圖預覽</h2>
+        <form method="dialog"><button type="submit" autofocus>關閉</button></form>
+      </div>
+      <p class="notice error" id="preview-error" role="alert" hidden>無法載入這張截圖，檔案可能已移除。</p>
+      <img id="preview-image" alt="" hidden>
+    </dialog>
+  {% endif %}
+{% endblock %}
